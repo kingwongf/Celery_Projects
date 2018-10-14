@@ -2,11 +2,20 @@ import os
 from celery import Celery
 import numpy as np
 from celery import chord
+import redis
+import os
+import logging
+from flask import Flask, Response, request, jsonify
+from celery import chord
 
 
+app = Flask(__name__)
+app.config['DEBUG'] = True
+logger = logging.getLogger(__name__)
 
-app = Celery(__name__)
-app.conf.update({
+
+app_celery = Celery(__name__)
+app_celery.conf.update({
     'broker_url': os.environ['CELERY_BROKER_URL'],
     'imports': ('tasks',),
     'result_backend': os.environ['CELERY_RESULT_BACKEND'],
@@ -15,7 +24,7 @@ app.conf.update({
     'result_serializer': 'json',
     'accept_content': ['json']})
 
-@app.task(bind=True, name='ArithAsian')
+@app_celery.task(bind=True, name='ArithAsian')
 def ArithAsian(self, S0, K, T, r, sig, M_sim,N_steps=100):
     dt = T/ N_steps
     sim = [[] for m in range(0,M_sim)]
@@ -26,12 +35,14 @@ def ArithAsian(self, S0, K, T, r, sig, M_sim,N_steps=100):
         sim[j] = (np.mean(S) -K)*np.exp(-T)
     return np.mean(sim)
 
-@app.task(bind=True, name='mean')
+@app_celery.task(bind=True, name='mean')
 def mean(self, args):
     return sum(args) / len(args)
 
 
-def run_simulation():
+
+@app.route('/', methods=['POST'])
+def index():
     simulations = 100000
     per_worker = 1000
     n = int(simulations / per_worker)
@@ -42,11 +53,16 @@ def run_simulation():
     r = 0.01
     sig = 0.1
 
+    logger.info(f'Create chord, n={n}')
 
-    chord([ArithAsian.s(
+    task = chord([ArithAsian.s(
         S0=S0,
         K=K,
         T=T,
         r=r,
         sig=sig,
         n_simulation=per_worker) for i in range(0, n)], mean.s())()
+    return jsonify({'id': str(task.id), 'status': task.status}), 201
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
